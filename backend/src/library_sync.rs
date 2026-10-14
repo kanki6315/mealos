@@ -1,9 +1,10 @@
-use crate::{Error, auth::digest};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
+
+use crate::{Error, auth::digest};
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -19,59 +20,91 @@ pub struct Snapshot {
 }
 
 pub async fn read(pool: &PgPool, user: Uuid) -> Result<Snapshot, Error> {
-    Ok(
-        sqlx::query_as("SELECT revision,library FROM library_sync WHERE user_id=$1")
-            .bind(user)
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or(Snapshot {
-                revision: 0,
-                library: None,
-            }),
+    Ok(sqlx::query_as!(
+        Snapshot,
+        "SELECT revision,library FROM library_sync WHERE user_id = $1",
+        user
     )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(Snapshot {
+        revision: 0,
+        library: None,
+    }))
 }
 
 pub async fn write(pool: &PgPool, user: Uuid, input: Write) -> Result<Value, Error> {
     validate(&input)?;
     let hash = digest(&serde_json::to_string(&input).map_err(|_| Error::bad_request())?);
     let mut tx = pool.begin().await?;
-    sqlx::query("INSERT INTO library_sync(user_id) VALUES ($1) ON CONFLICT DO NOTHING")
-        .bind(user)
-        .execute(&mut *tx)
+
+    sqlx::query!(
+        "INSERT INTO library_sync(user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        user
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let state = sqlx::query!(
+        r#"
+SELECT s.revision as revision, s.library as library, o.request_hash as "saved_hash?", o.revision as "saved_revision?"
+FROM library_sync s
+LEFT JOIN library_sync_operations o ON o.user_id = s.user_id AND o.operation_id = $2
+WHERE s.user_id = $1
+FOR UPDATE OF s
+"#,
+        user,
+        input.operation_id
+    )
+        .fetch_one(&mut *tx)
         .await?;
-    let current: Snapshot =
-        sqlx::query_as("SELECT revision,library FROM library_sync WHERE user_id=$1 FOR UPDATE")
-            .bind(user)
-            .fetch_one(&mut *tx)
-            .await?;
-    let revision = current.revision;
-    let receipt: Option<(String, i64)> = sqlx::query_as("SELECT request_hash,revision FROM library_sync_operations WHERE user_id=$1 AND operation_id=$2")
-        .bind(user).bind(input.operation_id).fetch_optional(&mut *tx).await?;
-    if let Some((saved_hash, saved_revision)) = receipt {
+
+    let revision = state.revision;
+    let library = state.library;
+    let saved_hash = state.saved_hash;
+    let saved_revision = state.saved_revision;
+
+    if let (Some(saved_hash), Some(saved_revision)) = (saved_hash, saved_revision) {
         if hash != saved_hash {
             return Err(Error(
                 StatusCode::CONFLICT,
                 "Operation ID already used for different edits.",
             ));
         }
-        return Ok(json!({"revision": saved_revision, "snapshot":current}));
+
+        return Ok(
+            json!({"revision": saved_revision, "snapshot": { "revision": revision, "library": library } }),
+        );
     }
+
     if revision != input.base_revision {
         return Err(Error(
             StatusCode::CONFLICT,
             "Another device changed your library. Your local edits are retained.",
         ));
     }
+
     let next = revision.checked_add(1).ok_or_else(Error::unavailable)?;
-    sqlx::query("UPDATE library_sync SET revision=$2,library=$3 WHERE user_id=$1")
-        .bind(user)
-        .bind(next)
-        .bind(&input.library)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("INSERT INTO library_sync_operations(user_id,operation_id,request_hash,revision) VALUES ($1,$2,$3,$4)")
-        .bind(user).bind(input.operation_id).bind(hash).bind(next).execute(&mut *tx).await?;
+
+    sqlx::query!(
+        r#"
+WITH updated AS (
+    UPDATE library_sync SET revision = $2, library=$3 where user_id = $1
+)
+INSERT INTO library_sync_operations(user_id, operation_id, request_hash, revision)
+VALUES ($1, $4, $5, $2)
+"#,
+        user,
+        next,
+        &input.library,
+        input.operation_id,
+        hash
+    )
+    .execute(&mut *tx)
+    .await?;
+
     tx.commit().await?;
+
     Ok(json!({"revision":next,"snapshot":{"revision":next,"library":input.library}}))
 }
 
