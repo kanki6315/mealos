@@ -1,7 +1,7 @@
 // Rust account API; the root hostname is reserved for the marketing site.
 FORKWARE_BACKEND_URL = https:/$()/forkware.arjunakankipati.com/api
-// Enable only after Apple approves PCC for this App ID and signing profiles.
-FORKWARE_PCC_ENABLED = NO
+// PCC is approved for this App ID; enable signing and runtime support together.
+FORKWARE_PCC_ENABLED = YES
 FORKWARE_ENTITLEMENTS_NO = MealOS/MealOS.entitlements
 FORKWARE_ENTITLEMENTS_YES = MealOS/MealOS-PCC.entitlements
 FORKWARE_ENTITLEMENTS = $(FORKWARE_ENTITLEMENTS_$(FORKWARE_PCC_ENABLED))

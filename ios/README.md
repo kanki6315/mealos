@@ -236,8 +236,8 @@ The target includes `com.apple.developer.private-cloud-compute`. Enable the appr
 
 Claude failures leave the conversation and current draft intact. Credit exhaustion, capacity limits, provider failures, and eligible transport failures offer a clearly labeled PCC button; account denial, invalid requests and explicit refusals do not. PCC sends a conservative 16 KB UTF-8 suffix of the conversation with the current draft, reserving context for instructions/reasoning/output. An oversized latest request is rejected rather than silently truncated. It never presents generated URLs as searched sources. If PCC is unavailable or out of quota, a persistent status explains why.
 
-### PCC approval pending
+### PCC enabled
 
-Default builds are Claude-only: `FORKWARE_PCC_ENABLED = NO` in `Config.xcconfig`. This selects the entitlement file without PCC and disables the fallback before creating an Apple model. The PCC implementation and `MealOS-PCC.entitlements` remain ready. After Apple enables PCC for the app identifier and signing profiles, set `FORKWARE_PCC_ENABLED = YES` to enable both signing and runtime support together. Verify the resulting archive entitlements before distribution.
+Default builds enable PCC: `FORKWARE_PCC_ENABLED = YES` in `Config.xcconfig` selects `MealOS-PCC.entitlements` and enables runtime fallback together. PCC approval is available for the app identifier; signing profiles must also include the entitlement. Set the flag to `NO` for a Claude-only build. Verify the resulting archive entitlements before distribution.
 
 Distribute all device builds through TestFlight. Do not install or launch directly on a physical device.
