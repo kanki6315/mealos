@@ -13,7 +13,7 @@ pub struct Signing {
 }
 impl Signing {
     pub fn new() -> Self {
-        let key = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let key = RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap();
         let keys=serde_json::from_value(json!({"keys":[{"kty":"RSA","kid":"test-key","use":"sig","alg":"RS256","n":URL_SAFE_NO_PAD.encode(key.n().to_bytes_be()),"e":URL_SAFE_NO_PAD.encode(key.e().to_bytes_be())}]})).unwrap();
         Self {
             key: EncodingKey::from_rsa_pem(key.to_pkcs1_pem(LineEnding::LF).unwrap().as_bytes())

@@ -1,9 +1,15 @@
-use crate::{Error, auth::digest};
+use std::{str::FromStr, time::Duration};
+
+use chrono::{DateTime, Utc};
 use sqlx::{
     PgPool,
+    migrate::Migrator,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{str::FromStr, time::Duration};
+
+use crate::Error;
+
+pub const MIGRATOR: Migrator = sqlx::migrate!();
 
 pub fn pool(url: &str) -> Result<PgPool, sqlx::Error> {
     let options = PgConnectOptions::from_str(url)?.options([
@@ -22,43 +28,65 @@ pub fn pool(url: &str) -> Result<PgPool, sqlx::Error> {
 // Same ledger/checksum format as the initial Node prototype; never reapply an
 // already-recorded migration or silently change its SQL.
 pub async fn migrate(pool: &PgPool) -> Result<(), Error> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(72984101)")
+    let legacy_exists = sqlx::query_scalar!(r#"SELECT EXISTS(SELECT FROM information_schema.tables WHERE table_name = 'schema_migrations') AS "legacy_exists!""#).fetch_one(pool).await?;
+
+    if legacy_exists {
+        let mut tx = pool.begin().await?;
+
+        sqlx::query!(
+            r#"
+CREATE TABLE IF NOT EXISTS _sqlx_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMPTZ NOT NULL DEFAULT now(),
+    success BOOLEAN NOT NULL,
+    checksum BYTEA NOT NULL,
+    execution_time BIGINT NOT NULL
+);
+"#
+        )
         .execute(&mut *tx)
         .await?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())").execute(&mut *tx).await?;
-    for (name, sql) in [
-        (
-            "001_foundation.sql",
-            include_str!("../migrations/001_foundation.sql"),
-        ),
-        (
-            "002_library_sync.sql",
-            include_str!("../migrations/002_library_sync.sql"),
-        ),
-    ] {
-        let checksum = digest(sql);
-        let existing: Option<String> =
-            sqlx::query_scalar("SELECT checksum FROM schema_migrations WHERE name=$1")
-                .bind(name)
-                .fetch_optional(&mut *tx)
+
+        for m in MIGRATOR.iter() {
+            let legacy_name = format!("{:03}_{}.sql", m.version, m.description.replace(' ', "_"));
+
+            // The one exception to using macros. `schema_migrations` shouldn't be present anymore
+            let applied = sqlx::query_scalar::<_, DateTime<Utc>>(
+                r#"SELECT applied_at FROM schema_migrations WHERE name = $1"#,
+            )
+            .bind(&legacy_name)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if let Some(applied_at) = applied {
+                sqlx::query!(
+                    r#"
+INSERT INTO _sqlx_migrations(version, description, installed_on, success, checksum, execution_time)
+VALUES ($1, $2, $3, TRUE, $4, 0)
+ON CONFLICT DO NOTHING
+"#,
+                    m.version,
+                    &*m.description,
+                    applied_at,
+                    &*m.checksum
+                )
+                .execute(&mut *tx)
                 .await?;
-        if let Some(existing) = existing {
-            if existing != checksum {
-                return Err(Error(
-                    axum::http::StatusCode::CONFLICT,
-                    "An applied migration has changed.",
-                ));
             }
-            continue;
         }
-        sqlx::raw_sql(sql).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO schema_migrations(name,checksum) VALUES ($1,$2)")
-            .bind(name)
-            .bind(checksum)
+
+        sqlx::query!("DROP TABLE schema_migrations")
             .execute(&mut *tx)
             .await?;
+
+        tx.commit().await?;
     }
-    tx.commit().await?;
-    Ok(())
+
+    MIGRATOR.run(pool).await.map_err(|_| {
+        Error(
+            axum::http::StatusCode::CONFLICT,
+            "Migration failed or modified",
+        )
+    })
 }
