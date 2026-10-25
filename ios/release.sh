@@ -46,7 +46,11 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+# FLIGHTDECK_PROTOCOL=1
+FLIGHTDECK_REQUIRES_IPAD=1
+source "$here/../.flightdeck/release.sh"
+
+log() { flightdeck_event "$*"; printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- Preflight -------------------------------------------------------------

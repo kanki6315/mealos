@@ -4,8 +4,8 @@ import argparse, datetime, json, os, pathlib, subprocess, sys
 root = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--output', type=pathlib.Path, default=pathlib.Path('/tmp') / ('mealos-ui-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S')))
-parser.add_argument('--iphone', help='Optional simulator UDID')
-parser.add_argument('--ipad', help='Optional simulator UDID')
+parser.add_argument('--iphone', default=os.environ.get('TEST_IPHONE_UDID'), help='Optional simulator UDID')
+parser.add_argument('--ipad', default=os.environ.get('TEST_IPAD_UDID'), help='Optional simulator UDID')
 args = parser.parse_args()
 env = os.environ.copy()
 if not env.get('DEVELOPER_DIR') and pathlib.Path('/Applications/Xcode.app/Contents/Developer').exists():

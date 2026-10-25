@@ -1,0 +1,29 @@
+name: FlightDeck integration
+on:
+  pull_request:
+    paths:
+      - '.flightdeck/**'
+      - 'AGENTS.md'
+      - 'ios/release.sh'
+      - 'ios/scripts/run_ui_tests.py'
+      - '.github/workflows/flightdeck.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.flightdeck/**'
+      - 'AGENTS.md'
+      - 'ios/release.sh'
+      - 'ios/scripts/run_ui_tests.py'
+      - '.github/workflows/flightdeck.yml'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate release and lease contract
+        run: python3 -m unittest discover -s .flightdeck -p 'test_*.py' -v
