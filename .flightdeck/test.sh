@@ -51,9 +51,9 @@ if [ -n "${TEST_PARALLEL_ENABLED:-}" ]; then
 fi
 
 log() { flightdeck_event "$*"; printf '\n==> %s\n' "$*"; }
+log "Host tests"
+/bin/bash "$root/.flightdeck/test-fast.sh"
 cd ios
-log "Swift core tests"
-swift test --package-path . --scratch-path "$out/SwiftBuild"
 log "iPhone UI tests"
 xcodebuild test -project Forkware.xcodeproj -scheme 'Forkware' \
     -destination "platform=iOS Simulator,id=$TEST_IPHONE_UDID" -derivedDataPath "$out/DerivedData" \
