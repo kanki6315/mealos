@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nSELECT s.revision as revision, s.library as library, o.request_hash as \"saved_hash?\", o.revision as \"saved_revision?\"\nFROM library_sync s\nLEFT JOIN library_sync_operations o ON o.user_id = s.user_id AND o.operation_id = $2\nWHERE s.user_id = $1\nFOR UPDATE OF s\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "library_sync",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "library",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "library_sync",
+            "name": "library"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "saved_hash?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_sync_operations",
+            "name": "request_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "saved_revision?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "library_sync_operations",
+            "name": "revision"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "2558220775c4b3f5452bed9267d99cb0aebef1dc3baef26148ab30277c848a25"
+}

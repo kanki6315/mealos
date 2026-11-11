@@ -1,22 +1,25 @@
-use crate::{Error, apple::AppleVerifier, assistant, auth, library_sync, recipes};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::PgPool;
-use std::{
-    collections::VecDeque,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::sync::Mutex;
+use sqlx::{PgPool, migrate::MigrationType};
 use uuid::Uuid;
+
+use crate::{
+    Error, apple::AppleVerifier, assistant, assistant::Failure, auth, db, library_sync, recipes,
+};
 
 pub struct AppState {
     pub pool: PgPool,
@@ -43,36 +46,46 @@ impl AppState {
 }
 pub fn router(state: Arc<AppState>) -> Router {
     let auth_routes = Router::new()
-        .route("/v1/auth/apple/challenge", post(challenge))
-        .route("/v1/auth/apple", post(sign_in))
-        .route("/v1/auth/refresh", post(refresh))
-        .route("/v1/auth/logout", post(logout))
+        .route("/apple/challenge", post(challenge))
+        .route("/apple", post(sign_in))
+        .route("/refresh", post(refresh))
+        .route("/logout", post(logout))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth_limit));
-    let api = Router::new()
-        .merge(auth_routes)
+
+    let health_routes = Router::new()
         .route("/health", get(|| async { Json(json!({"ok":true})) }))
         .route("/ready", get(ready))
-        .route("/v1/me", get(me))
-        .route("/v1/recipes/{id}", get(recipe))
-        .merge(
-            Router::new()
-                .route("/v1/library", get(library_read).post(library_write))
-                .layer(DefaultBodyLimit::max(2_000_000)),
-        )
-        .merge(
-            Router::new()
-                .route("/v1/recipe-chat", post(chat))
-                .layer(DefaultBodyLimit::max(256_000))
-                .layer(middleware::from_fn(assistant_timeout)),
-        )
-        .fallback(|| async { Error(StatusCode::NOT_FOUND, "Not found.") })
+        .with_state(state.clone());
+
+    let library_routes = Router::new()
+        .route("/library", get(library_read).post(library_write))
+        .layer(DefaultBodyLimit::max(2_000_000));
+
+    let recipe_chat_route = Router::new()
+        .route("/recipe-chat", post(chat))
+        .layer(DefaultBodyLimit::max(256_000))
+        .layer(middleware::from_fn(assistant_timeout));
+
+    let v1api_routes = Router::new()
+        .nest("/auth", auth_routes)
+        .route("/me", get(me))
+        .route("/recipes/{id}", get(recipe))
+        .merge(library_routes)
+        .merge(recipe_chat_route)
         .layer(DefaultBodyLimit::max(24_000))
         .layer(middleware::from_fn(headers_and_timeout))
         .with_state(state);
-    Router::new().nest("/api", api.clone()).merge(api)
+
+    let api = Router::new().nest("/v1", v1api_routes);
+
+    Router::new()
+        .nest("/api", api)
+        .merge(health_routes)
+        .fallback(|| async { Error(StatusCode::NOT_FOUND, "Not found.") })
 }
+
 async fn headers_and_timeout(request: Request, next: Next) -> Response {
-    let mut response = match tokio::time::timeout(
+    let mut response = tokio::time::timeout(
         Duration::from_secs(if request.uri().path().ends_with("/v1/recipe-chat") {
             115
         } else {
@@ -81,29 +94,47 @@ async fn headers_and_timeout(request: Request, next: Next) -> Response {
         next.run(request),
     )
     .await
-    {
-        Ok(response) => response,
-        Err(_) => Error(StatusCode::REQUEST_TIMEOUT, "Request timed out.").into_response(),
-    };
-    response
-        .headers_mut()
-        .insert("cache-control", HeaderValue::from_static("no-store"));
-    response.headers_mut().insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
-    );
+    .unwrap_or_else(|_| Error(StatusCode::REQUEST_TIMEOUT, "Request timed out.").into_response());
+
+    response.headers_mut().extend([
+        (
+            HeaderName::from_static("cache-control"),
+            HeaderValue::from_static("no-store"),
+        ),
+        (
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ),
+    ]);
+
     response
 }
+
 async fn auth_limit(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
     let now = Instant::now();
-    let mut times = state.auth_requests.lock().await;
-    while times
-        .front()
-        .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
-    {
-        times.pop_front();
-    }
-    if times.len() >= 60 {
+
+    let is_rate_limited = {
+        let mut times = state
+            .auth_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
+        {
+            times.pop_front();
+        }
+
+        if times.len() >= 60 {
+            true
+        } else {
+            times.push_back(now);
+            false
+        }
+    };
+
+    if is_rate_limited {
         let mut response = Error(
             StatusCode::TOO_MANY_REQUESTS,
             "Too many authentication requests.",
@@ -114,26 +145,19 @@ async fn auth_limit(State(state): State<Arc<AppState>>, request: Request, next: 
             .insert("retry-after", HeaderValue::from_static("60"));
         return response;
     }
-    times.push_back(now);
-    drop(times);
+
     next.run(request).await
 }
-fn body<T>(value: Result<Json<T>, JsonRejection>) -> Result<T, Error> {
-    value.map(|Json(v)| v).map_err(|e| {
-        if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-            Error(StatusCode::PAYLOAD_TOO_LARGE, "Request is too large.")
-        } else {
-            Error::bad_request()
-        }
-    })
-}
+
 fn object(value: Result<Json<Value>, JsonRejection>) -> Result<(), Error> {
-    if body(value)?.is_object() {
+    let Json(value) = value?;
+    if value.is_object() {
         Ok(())
     } else {
         Err(Error::bad_request())
     }
 }
+
 fn bearer(headers: &HeaderMap) -> Result<&str, Error> {
     headers
         .get("authorization")
@@ -141,15 +165,30 @@ fn bearer(headers: &HeaderMap) -> Result<&str, Error> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(Error::unauthorized)
 }
+
 async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Value>, Error> {
-    let present: bool = sqlx::query_scalar(
-        "SELECT count(*)=2 FROM schema_migrations WHERE name IN ('001_foundation.sql','002_library_sync.sql')",
+    let migrations = db::MIGRATOR
+        .iter()
+        .filter(|m| m.migration_type == MigrationType::Simple)
+        .map(|m| m.description.to_string())
+        .collect::<Vec<_>>();
+
+    let present = sqlx::query_scalar!(
+        r#"
+SELECT count(*)=$1 AS "present!"
+FROM _sqlx_migrations
+WHERE description = ANY($2)
+  AND success=TRUE
+"#,
+        migrations.len() as i64,
+        &migrations
     )
-    .fetch_one(&state.pool)
-    .await?;
+        .fetch_one(&state.pool)
+        .await?;
     if !present {
         return Err(Error::unavailable());
     }
+
     Ok(Json(json!({"ok":true})))
 }
 async fn challenge(
@@ -168,11 +207,12 @@ struct SignIn {
     challenge_id: Uuid,
     identity_token: String,
 }
+
 async fn sign_in(
     State(state): State<Arc<AppState>>,
     input: Result<Json<SignIn>, JsonRejection>,
 ) -> Result<Json<auth::Tokens>, Error> {
-    let input = body(input)?;
+    let Json(input) = input?;
     if input.identity_token.is_empty() || input.identity_token.len() > 16_384 {
         return Err(Error::bad_request());
     }
@@ -182,19 +222,23 @@ async fn sign_in(
         auth::finish_sign_in(&state.pool, input.challenge_id, &subject).await?,
     ))
 }
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Refresh {
     refresh_token: String,
 }
+
 async fn refresh(
     State(state): State<Arc<AppState>>,
     input: Result<Json<Refresh>, JsonRejection>,
 ) -> Result<Json<auth::Tokens>, Error> {
+    let Json(input) = input?;
     Ok(Json(
-        auth::refresh(&state.pool, &body(input)?.refresh_token).await?,
+        auth::refresh(&state.pool, &input.refresh_token).await?,
     ))
 }
+
 async fn logout(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -228,40 +272,37 @@ async fn recipe(
 }
 
 async fn assistant_timeout(request: Request, next: Next) -> Response {
-    match tokio::time::timeout(Duration::from_secs(110), next.run(request)).await {
-        Ok(response) => response,
-        Err(_) => assistant::Failure {
-            status: StatusCode::GATEWAY_TIMEOUT,
-            code: "provider_timeout",
-            message: "Claude timed out. You can try Apple Private Cloud Compute.",
-            fallback: true,
-        }
-        .into_response(),
-    }
+    tokio::time::timeout(Duration::from_secs(110), next.run(request))
+        .await
+        .unwrap_or_else(|_| {
+            Failure {
+                status: StatusCode::GATEWAY_TIMEOUT,
+                code: "provider_timeout",
+                message: "Claude timed out. You can try Apple Private Cloud Compute.",
+                fallback: true,
+            }
+            .into_response()
+        })
 }
 async fn chat(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     input: Result<Json<assistant::Chat>, JsonRejection>,
-) -> Response {
-    let identity = match bearer(&headers) {
-        Ok(token) => match auth::authenticate(&state.pool, token).await {
-            Ok(identity) => identity,
-            Err(e) => return e.into_response(),
-        },
-        Err(e) => return e.into_response(),
-    };
+) -> Result<Response, Error> {
+    let token = bearer(&headers)?;
+    let identity = auth::authenticate(&state.pool, token).await?;
+
     let Some(assistant) = &state.assistant else {
-        return assistant::disabled().into_response();
+        return Ok(assistant::disabled().into_response());
     };
-    let input = match body(input) {
-        Ok(input) => input,
-        Err(e) => return e.into_response(),
+
+    let Json(input) = input?;
+    let value = match assistant.chat(identity.id, input).await {
+        Ok(value) => value,
+        Err(failure) => return Ok(failure.into_response()),
     };
-    match assistant.chat(identity.id, input).await {
-        Ok(value) => Json(value).into_response(),
-        Err(e) => e.into_response(),
-    }
+
+    Ok(Json(value).into_response())
 }
 
 async fn library_read(

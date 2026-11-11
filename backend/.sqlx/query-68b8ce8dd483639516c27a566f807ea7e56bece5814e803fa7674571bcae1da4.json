@@ -1,0 +1,55 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nWITH consumed AS (\n    UPDATE auth_challenges\n    SET consumed_at = now()\n    WHERE id = $1 AND consumed_at IS NULL AND expires_at > now()\n    RETURNING 1\n),\nins_user AS (\n    INSERT INTO users (apple_subject)\n    SELECT $2 WHERE EXISTS (SELECT 1 FROM consumed)\n    ON CONFLICT (apple_subject) DO NOTHING\n    RETURNING id\n),\ntarget_user AS (\n    SELECT id FROM ins_user\n    UNION ALL\n    SELECT id FROM users\n    WHERE apple_subject=$2 AND EXISTS (SELECT 1 FROM consumed) AND NOT EXISTS(SELECT 1 FROM ins_user)\n)\nINSERT INTO sessions(user_id, access_hash, refresh_hash, access_expires_at, expires_at)\nSELECT id, $3, $4, now() + interval '15 minutes', now() + interval '30 days'\nFROM target_user\nRETURNING user_id, access_expires_at, expires_at\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "access_expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "access_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "68b8ce8dd483639516c27a566f807ea7e56bece5814e803fa7674571bcae1da4"
+}

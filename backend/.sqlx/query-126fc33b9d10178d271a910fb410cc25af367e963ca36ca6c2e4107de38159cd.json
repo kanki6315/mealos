@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DROP TABLE schema_migrations",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "126fc33b9d10178d271a910fb410cc25af367e963ca36ca6c2e4107de38159cd"
+}

@@ -1,8 +1,9 @@
-use crate::Error;
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+use crate::Error;
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Recipe {
@@ -12,18 +13,25 @@ pub struct Recipe {
     pub content: Value,
 }
 pub async fn read(pool: &PgPool, recipe_id: &str, user_id: Uuid) -> Result<Option<Recipe>, Error> {
-    Ok(sqlx::query_as(
-        r#"SELECT r.id,v.id AS version_id,v.version,v.content
-      FROM recipes r JOIN LATERAL (
-        SELECT rv.* FROM recipe_versions rv WHERE rv.recipe_id=r.id AND (
-          r.owner_id=$2 OR EXISTS (SELECT 1 FROM publications p
-            WHERE p.recipe_id=r.id AND p.version_id=rv.id AND p.visibility='public'
-              AND p.review_state='approved' AND p.withdrawn_at IS NULL)
-        ) ORDER BY rv.version DESC LIMIT 1
-      ) v ON true WHERE r.id=$1 AND r.deleted_at IS NULL"#,
+    Ok(sqlx::query_as!(
+        Recipe,
+        r#"SELECT r.id, rv.id AS version_id, rv.version, rv.content
+FROM recipes r
+         JOIN recipe_versions rv ON rv.recipe_id = r.id
+WHERE r.id = $1
+  AND r.deleted_at IS NULL
+  AND (r.owner_id = $2 OR EXISTS(SELECT 1
+                                FROM publications p
+                                WHERE p.recipe_id = r.id
+                                  AND p.version_id = rv.id
+                                  AND p.visibility = 'public'
+                                  AND p.review_state = 'approved'
+                                  AND p.withdrawn_at IS NULL))
+ORDER BY rv.version DESC
+LIMIT 1"#,
+        recipe_id,
+        user_id,
     )
-    .bind(recipe_id)
-    .bind(user_id)
     .fetch_optional(pool)
     .await?)
 }

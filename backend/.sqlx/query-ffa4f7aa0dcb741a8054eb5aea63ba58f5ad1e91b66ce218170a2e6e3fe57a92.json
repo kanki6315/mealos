@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT revision,library FROM library_sync WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "library_sync",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "library",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "library_sync",
+            "name": "library"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "ffa4f7aa0dcb741a8054eb5aea63ba58f5ad1e91b66ce218170a2e6e3fe57a92"
+}

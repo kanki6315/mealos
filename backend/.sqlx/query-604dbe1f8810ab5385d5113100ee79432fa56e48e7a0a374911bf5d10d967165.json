@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nWITH updated AS (\n    UPDATE library_sync SET revision = $2, library=$3 where user_id = $1\n)\nINSERT INTO library_sync_operations(user_id, operation_id, request_hash, revision)\nVALUES ($1, $4, $5, $2)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Jsonb",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "604dbe1f8810ab5385d5113100ee79432fa56e48e7a0a374911bf5d10d967165"
+}

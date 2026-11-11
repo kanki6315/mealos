@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nWITH del_challenges AS (\n    DELETE FROM auth_challenges WHERE expires_at < now()\n),\ndel_sessions AS (\n    DELETE FROM sessions WHERE expires_at < now()\n)\nINSERT INTO auth_challenges (nonce_hash, expires_at)\nVALUES ($1, now() + interval '5 minutes')\nRETURNING id, expires_at\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "auth_challenges",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_challenges",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "69c78ac07dce362dd2e08a2a042d040ca9d2bf144d3a738aaa82b24807f2babd"
+}
